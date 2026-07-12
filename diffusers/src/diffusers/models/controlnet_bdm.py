@@ -38,6 +38,7 @@ from .unet_2d_blocks import (
     get_down_block,
 )
 from .unet_2d_condition import UNet2DConditionModel
+from .pyramiddiff_groundnet import MultiScaleObjectPyramid
 import pdb
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -217,6 +218,8 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
         conditioning_embedding_out_channels: Optional[Tuple[int]] = (16, 32, 96, 256),
         global_pool_conditions: bool = False,
         addition_embed_type_num_heads=64,
+        use_pyramiddiff_msop: bool = False,
+        grounding_token_dim: int = 768,
     ):
         super().__init__()
 
@@ -348,6 +351,7 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
 
         self.down_blocks = nn.ModuleList([])
         self.controlnet_down_blocks = nn.ModuleList([])
+        self.pyramiddiff_level_channels = []
 
         if isinstance(only_cross_attention, bool):
             only_cross_attention = [only_cross_attention] * len(down_block_types)
@@ -364,6 +368,7 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
         controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
         controlnet_block = zero_module(controlnet_block)
         self.controlnet_down_blocks.append(controlnet_block)
+        self.pyramiddiff_level_channels.append(output_channel)
 
         for i, down_block_type in enumerate(down_block_types):
             input_channel = output_channel
@@ -396,11 +401,13 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
                 controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
                 controlnet_block = zero_module(controlnet_block)
                 self.controlnet_down_blocks.append(controlnet_block)
+                self.pyramiddiff_level_channels.append(output_channel)
 
             if not is_final_block:
                 controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
                 controlnet_block = zero_module(controlnet_block)
                 self.controlnet_down_blocks.append(controlnet_block)
+                self.pyramiddiff_level_channels.append(output_channel)
 
         # mid
         mid_block_channel = block_out_channels[-1]
@@ -408,6 +415,12 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
         controlnet_block = nn.Conv2d(mid_block_channel, mid_block_channel, kernel_size=1)
         controlnet_block = zero_module(controlnet_block)
         self.controlnet_mid_block = controlnet_block
+        self.pyramiddiff_level_channels.append(mid_block_channel)
+        self.pyramiddiff_msop = (
+            MultiScaleObjectPyramid(grounding_token_dim, self.pyramiddiff_level_channels)
+            if use_pyramiddiff_msop
+            else None
+        )
 
         self.mid_block = UNetMidBlock2DCrossAttn(
             transformer_layers_per_block=transformer_layers_per_block[-1],
@@ -431,6 +444,7 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
         controlnet_conditioning_channel_order: str = "rgb",
         conditioning_embedding_out_channels: Optional[Tuple[int]] = (16, 32, 96, 256),
         load_weights_from_unet: bool = True,
+        **pyramiddiff_kwargs,
     ):
         r"""
         Instantiate a [`ControlNetModel`] from [`UNet2DConditionModel`].
@@ -479,6 +493,7 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
             projection_class_embeddings_input_dim=unet.config.projection_class_embeddings_input_dim,
             controlnet_conditioning_channel_order=controlnet_conditioning_channel_order,
             conditioning_embedding_out_channels=conditioning_embedding_out_channels,
+            **pyramiddiff_kwargs,
         )
 
         if load_weights_from_unet:
@@ -801,7 +816,16 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
                 cross_attention_kwargs=cross_attention_kwargs,
             )
 
-        # 5. Control net blocks
+        # 5. PyramidDiff MSOP + ControlNet zero-conv blocks
+        # If controlnet_cond is a 3D tensor, it is interpreted as GroundNet object
+        # tokens (B, N, grounding_token_dim). MSOP routes these tokens over the
+        # down/mid feature pyramid before zero-conv residual injection. The legacy
+        # image-conditioning path is preserved when MSOP is disabled or a 4D
+        # condition image is supplied.
+        if self.pyramiddiff_msop is not None and controlnet_cond is not None and controlnet_cond.dim() == 3:
+            pyramid_features, _ = self.pyramiddiff_msop(list(down_block_res_samples) + [sample], controlnet_cond)
+            down_block_res_samples = tuple(pyramid_features[:-1])
+            sample = pyramid_features[-1]
 
         controlnet_down_block_res_samples = ()
 
