@@ -24,8 +24,6 @@ if is_torch_available():
     from .controlnet_bdm import ControlNetBDMModel
     from .pyramiddiff_groundnet import (
         DetectionAwareAnnotationConsistencyLoss,
-        DetectionPredictions,
-        YOLOv11xVerificationDetector,
         FourierBoxEmbedder,
         GatedSelfAttention,
         GroundingTokenizer,

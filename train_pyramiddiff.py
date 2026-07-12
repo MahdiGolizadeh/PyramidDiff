@@ -53,9 +53,7 @@ import diffusers
 from diffusers import (
     AutoencoderKL,
     ControlNetModel,
-    ControlNetBDMModel,
     DetectionAwareAnnotationConsistencyLoss,
-    YOLOv11xVerificationDetector,
     GroundingTokenizer,
     MultiScaleObjectPyramid,
     DDPMScheduler,
@@ -259,7 +257,7 @@ These are controlnet weights trained on {base_model} with new type of conditioni
 
 
 def parse_args(input_args=None):
-    parser = argparse.ArgumentParser(description="PyramidDiff COCO2017 layout-to-image training script.")
+    parser = argparse.ArgumentParser(description="Simple example of a ControlNet training script.")
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
@@ -313,9 +311,9 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--train_batch_size", type=int, default=8, help="Batch size per GPU. Default 8 gives total batch size 64 on eight A100 GPUs."
+        "--train_batch_size", type=int, default=4, help="Batch size (per device) for the training dataloader."
     )
-    parser.add_argument("--num_train_epochs", type=int, default=30)
+    parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -552,7 +550,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--train_data_yaml",
         type=str,
-        default="utils/dataset/latent_LayoutDiffusion_large_coco.yaml",
+        default="latent_LayoutDiffusion_large_demo.yaml",
     )
     parser.add_argument(
         "--validation_steps",
@@ -567,22 +565,12 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--tracker_project_name",
         type=str,
-        default="pyramiddiff_coco2017",
+        default="train_controlnet",
         help=(
             "The `project_name` argument passed to Accelerator.init_trackers for"
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
-    parser.add_argument("--dataset_backend", type=str, default="coco", choices=["coco", "grit"], help="Dataset builder to use. PyramidDiff experiments default to MS COCO 2017.")
-    parser.add_argument("--enable_msop", action=argparse.BooleanOptionalAction, default=True, help="Enable Multi-Scale Object Pyramid routing in the GroundNet/HiCo conditioning branch.")
-    parser.add_argument("--enable_da_acl", action=argparse.BooleanOptionalAction, default=True, help="Enable Detection-Aware Annotation Consistency Learning with a frozen YOLOv11-X verifier.")
-    parser.add_argument("--da_acl_weight", type=float, default=0.1, help="Overall λ weight for detection-aware supervision.")
-    parser.add_argument("--lambda_loc", type=float, default=1.0, help="DA-ACL localization consistency weight.")
-    parser.add_argument("--lambda_cls", type=float, default=1.0, help="DA-ACL classification consistency weight.")
-    parser.add_argument("--lambda_miss", type=float, default=2.0, help="DA-ACL missing-object consistency weight.")
-    parser.add_argument("--verification_detector", type=str, default="yolo11x.pt", help="Frozen YOLOv11-X/YOLO11x detector weights used by DA-ACL.")
-    parser.add_argument("--synthetic_eval_images", type=int, default=10000, help="Number of synthetic COCO-layout images to generate for downstream YOLOv11-M detector training.")
-    parser.add_argument("--downstream_detector", type=str, default="yolo11m.pt", help="Detector architecture trained exclusively on generated data for downstream mAP evaluation.")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -915,16 +903,12 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
     )
 
-    controlnet_cls = ControlNetBDMModel if args.enable_msop else ControlNetModel
     if args.controlnet_model_name_or_path:
-        logger.info("Loading existing GroundNet/ControlNet weights")
-        controlnet = controlnet_cls.from_pretrained(args.controlnet_model_name_or_path)
+        logger.info("Loading existing controlnet weights")
+        controlnet = ControlNetModel.from_pretrained(args.controlnet_model_name_or_path)
     else:
-        logger.info("Initializing PyramidDiff GroundNet weights from unet")
-        if args.enable_msop:
-            controlnet = controlnet_cls.from_unet(unet, use_pyramiddiff_msop=True, grounding_token_dim=768)
-        else:
-            controlnet = controlnet_cls.from_unet(unet)
+        logger.info("Initializing controlnet weights from unet")
+        controlnet = ControlNetModel.from_unet(unet)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -947,7 +931,7 @@ def main(args):
                 model = models.pop()
 
                 # load diffusers style into model
-                load_model = controlnet_cls.from_pretrained(input_dir, subfolder="controlnet")
+                load_model = ControlNetModel.from_pretrained(input_dir, subfolder="controlnet")
                 model.register_to_config(**load_model.config)
 
                 model.load_state_dict(load_model.state_dict())
@@ -1025,19 +1009,13 @@ def main(args):
 
 
     cfg_data = OmegaConf.load(args.train_data_yaml)
-    if args.dataset_backend == "coco" and args.train_data_dir is not None:
-        cfg_data.data.parameters.root_dir = args.train_data_dir
-    if args.dataset_backend == "coco":
-        train_dataset = make_train_dataset_coco(cfg_data, 'train', accelerator)
-        collate_fn = coco_collate_fn_for_layout
-    else:
-        train_dataset = make_train_dataset_grit(cfg_data, 'train', accelerator, tokenizer)
-        collate_fn = grit_collate_fn_for_layout
+    #train_dataset = make_train_dataset_coco(cfg_data, 'train', accelerator) 
+    train_dataset = make_train_dataset_grit(cfg_data, 'train', accelerator, tokenizer)
 
     train_dataloader = DataLoaderUpd(
         train_dataset,
         shuffle=True,
-        collate_fn=collate_fn,
+        collate_fn=grit_collate_fn_for_layout,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
         pin_memory=True
@@ -1076,18 +1054,6 @@ def main(args):
     vae.to(accelerator.device, dtype=weight_dtype)
     unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
-
-    da_acl_loss = None
-    verification_detector = None
-    if args.enable_da_acl:
-        da_acl_loss = DetectionAwareAnnotationConsistencyLoss(
-            lambda_loc=args.lambda_loc,
-            lambda_cls=args.lambda_cls,
-            lambda_miss=args.lambda_miss,
-        )
-        verification_detector = YOLOv11xVerificationDetector(args.verification_detector, device=accelerator.device)
-        verification_detector.requires_grad_(False)
-        verification_detector.eval()
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)

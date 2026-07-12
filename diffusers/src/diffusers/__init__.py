@@ -42,8 +42,6 @@ else:
         ControlNetModel,
         ControlNetBDMModel,
         DetectionAwareAnnotationConsistencyLoss,
-        DetectionPredictions,
-        YOLOv11xVerificationDetector,
         FourierBoxEmbedder,
         GatedSelfAttention,
         GroundingTokenizer,
