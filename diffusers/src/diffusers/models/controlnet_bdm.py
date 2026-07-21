@@ -444,6 +444,7 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
         controlnet_conditioning_channel_order: str = "rgb",
         conditioning_embedding_out_channels: Optional[Tuple[int]] = (16, 32, 96, 256),
         load_weights_from_unet: bool = True,
+        **pyramiddiff_kwargs,
     ):
         r"""
         Instantiate a [`ControlNetModel`] from [`UNet2DConditionModel`].
@@ -492,6 +493,7 @@ class ControlNetBDMModel(ModelMixin, ConfigMixin, FromOriginalControlnetMixin, U
             projection_class_embeddings_input_dim=unet.config.projection_class_embeddings_input_dim,
             controlnet_conditioning_channel_order=controlnet_conditioning_channel_order,
             conditioning_embedding_out_channels=conditioning_embedding_out_channels,
+            **pyramiddiff_kwargs,
         )
 
         if load_weights_from_unet:

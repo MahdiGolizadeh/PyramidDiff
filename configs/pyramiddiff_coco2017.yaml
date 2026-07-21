@@ -1,0 +1,57 @@
+# PyramidDiff experimental setup for MS COCO 2017.
+# Dataset: 118,287 train2017 images and 5,000 val2017 images with layouts
+# from object category labels and bounding boxes, plus captions for global prompt guidance.
+dataset:
+  name: ms_coco_2017
+  root_dir: ./coco
+  train_images: images/train2017
+  val_images: images/val2017
+  train_instances: annotations/instances_train2017.json
+  val_instances: annotations/instances_val2017.json
+  captions_train: annotations/captions_train2017.json
+  captions_val: annotations/captions_val2017.json
+  train_images_count: 118287
+  val_images_count: 5000
+  layout_fields: [bbox, category]
+  prompt_field: caption
+
+training:
+  implementation_base: HiCo
+  model: PyramidDiff
+  conditioning_branch: GroundNet_with_MSOP
+  diffusion_backbone: frozen_stable_diffusion_unet
+  dataset_backend: coco
+  epochs: 30
+  total_batch_size: 64
+  gpus: 8
+  gpu_type: NVIDIA_A100
+  per_gpu_batch_size: 8
+  optimizer: AdamW
+  train_data_yaml: utils/dataset/latent_LayoutDiffusion_large_coco.yaml
+  inference: standard_hico_sampling_without_postprocessing
+
+msop:
+  enabled: true
+  integration: HiCo_conditioning_branch
+
+da_acl:
+  enabled: true
+  verifier: yolo11x.pt
+  verifier_alias: YOLOv11-X
+  frozen_verifier: true
+  lambda_loc: 1.0
+  lambda_cls: 1.0
+  lambda_miss: 2.0
+  lambda_da: 0.1
+
+evaluation:
+  split: val2017
+  image_quality: [FID]
+  layout_fidelity_and_annotation_consistency: [AP, AP50, mIoU]
+  verification_detector: yolo11x.pt
+  downstream_detection:
+    synthetic_images: 10000
+    generated_from: MS_COCO_layouts
+    train_detector: yolo11m.pt
+    train_data: generated_images_only
+    metrics: [mAP@0.5, mAP@0.5:0.95]
