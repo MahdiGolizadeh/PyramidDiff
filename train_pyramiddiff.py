@@ -53,6 +53,8 @@ import diffusers
 from diffusers import (
     AutoencoderKL,
     ControlNetModel,
+    ACDMAdapter,
+    CopiedUNetDecoderBranch,
     DetectionAwareAnnotationConsistencyLoss,
     GroundingTokenizer,
     MultiScaleObjectPyramid,
@@ -77,9 +79,8 @@ check_min_version("0.21.0.dev0")
 
 logger = get_logger(__name__)
 
-# PyramidDiff trains a GroundNet/ControlNet side branch with optional MSOP and DA-ACL building blocks.
-# The lightweight modules are imported above so experiments can attach scale-aware routing and
-# detection-aware annotation consistency without changing the frozen Stable Diffusion backbone.
+# PyramidDiff builds on the original HiCo ControlNet branch and adds a copied UNet decoder plus a separate ACDM adapter.
+# The adapter connects decoder ResNet features to YOLOv11n neck features while the Stable Diffusion backbone stays frozen.
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
@@ -264,6 +265,31 @@ def parse_args(input_args=None):
         default=None,
         required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--acdm_decoder_model_name_or_path",
+        type=str,
+        default=None,
+        help="Optional path to pretrained PyramidDiff ACDM decoder branch weights.",
+    )
+    parser.add_argument(
+        "--detector_neck_channels",
+        type=int,
+        nargs=3,
+        default=(256, 512, 1024),
+        help="YOLOv11n neck channel sizes used by ACDM LAB/APF modules.",
+    )
+    parser.add_argument(
+        "--detector_localization_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight for detector localization knowledge-distillation loss when detector outputs are supplied.",
+    )
+    parser.add_argument(
+        "--diffusion_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight for standard diffusion reconstruction loss.",
     )
     parser.add_argument(
         "--controlnet_model_name_or_path",
@@ -943,7 +969,16 @@ def main(args):
     vae.requires_grad_(False)
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
+    copied_decoder = CopiedUNetDecoderBranch(unet)
+    acdm_adapter = ACDMAdapter(copied_decoder.decoder_channels, detector_neck_channels=args.detector_neck_channels)
+    if args.acdm_decoder_model_name_or_path:
+        checkpoint = torch.load(args.acdm_decoder_model_name_or_path, map_location="cpu")
+        copied_decoder.load_state_dict(checkpoint.get("copied_decoder", checkpoint), strict=False)
+        if isinstance(checkpoint, dict) and "acdm_adapter" in checkpoint:
+            acdm_adapter.load_state_dict(checkpoint["acdm_adapter"], strict=False)
     controlnet.train()
+    copied_decoder.train()
+    acdm_adapter.train()
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -998,7 +1033,7 @@ def main(args):
 
 
     # Optimizer creation
-    params_to_optimize = controlnet.parameters()
+    params_to_optimize = list(controlnet.parameters()) + list(copied_decoder.trainable_parameters()) + list(acdm_adapter.parameters())
     optimizer = optimizer_class(
         params_to_optimize,
         lr=args.learning_rate,
@@ -1038,8 +1073,8 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, optimizer, train_dataloader, lr_scheduler
+    controlnet, copied_decoder, acdm_adapter, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        controlnet, copied_decoder, acdm_adapter, optimizer, train_dataloader, lr_scheduler
     )
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
@@ -1054,6 +1089,8 @@ def main(args):
     vae.to(accelerator.device, dtype=weight_dtype)
     unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
+    copied_decoder.to(accelerator.device, dtype=weight_dtype)
+    acdm_adapter.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1230,13 +1267,16 @@ def main(args):
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                # Detector localization KD can be added by datasets that provide frozen-detector predictions;
+                # keep the standard diffusion reconstruction objective active for PyramidDiff fine-tuning.
+                loss = args.diffusion_loss_weight * diffusion_loss
 
 
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    params_to_clip = controlnet.parameters()
+                    params_to_clip = list(controlnet.parameters()) + list(copied_decoder.trainable_parameters()) + list(acdm_adapter.parameters())
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
@@ -1291,7 +1331,7 @@ def main(args):
                             global_step,
                         )
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss": loss.detach().item(), "diffusion_loss": diffusion_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
@@ -1303,6 +1343,10 @@ def main(args):
     if accelerator.is_main_process:
         controlnet = accelerator.unwrap_model(controlnet)
         controlnet.save_pretrained(args.output_dir)
+        torch.save({
+            "copied_decoder": accelerator.unwrap_model(copied_decoder).state_dict(),
+            "acdm_adapter": accelerator.unwrap_model(acdm_adapter).state_dict(),
+        }, os.path.join(args.output_dir, "acdm_decoder.pt"))
 
         if args.push_to_hub:
             save_model_card(

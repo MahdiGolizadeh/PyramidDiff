@@ -3,7 +3,7 @@ import os
 import sys
 import argparse
 
-# The local diffusers fork used by HiCo only needs the PyTorch pipeline for
+# The local diffusers fork used by PyramidDiff only needs the PyTorch pipeline for
 # this script.  Newer Colab/Python images may have JAX/Flax installed while
 # using a transformers build that no longer exposes FlaxCLIPTextModel, which
 # makes diffusers import optional Flax Stable Diffusion modules and fail before
@@ -14,7 +14,7 @@ PLACEHOLDER_IMAGE_PATH = "The local path of your own image."
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Run HiCo inference. By default this reads results/examples/json_1.json; "
+            "Run PyramidDiff inference. By default this reads results/examples/json_1.json; "
             "the image path is optional because generation uses prompt and layout boxes."
         )
     )
@@ -37,7 +37,7 @@ fuse_type = "avg"   # "avg", "sum"
 mode = "batch"      # "batch", "single"   "batch" for parallel processing  "single" for sequential processing
 unet_flag = 0
 cfg = 7.5
-controlnet_path= "" #HiCo checkpoints
+controlnet_path= "" #PyramidDiff checkpoints
 base_model = ""     #SD 1.5 checkpoints
 schd = "UniPCM"
 save_dir_base = args.save_dir
@@ -111,14 +111,14 @@ LOCAL_DIFFUSERS_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), '
 if LOCAL_DIFFUSERS_SRC not in sys.path:
     sys.path.insert(0, LOCAL_DIFFUSERS_SRC)
 
-from diffusers import  ControlNetModel, UniPCMultistepScheduler, DPMSolverMultistepScheduler, StableDiffusionHicoNetLayoutPipeline
+from diffusers import  ControlNetModel, UniPCMultistepScheduler, DPMSolverMultistepScheduler, StableDiffusionPyramidDiffLayoutPipeline
 
 
-HiCoNet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float32)
+PyramidDiffNet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float32)
 
 #pipe = StableDiffusionControlNetMultiLayoutPipeline.from_pretrained(
-pipe = StableDiffusionHicoNetLayoutPipeline.from_pretrained(
-    base_model_path, controlnet=[HiCoNet], torch_dtype=torch.float32
+pipe = StableDiffusionPyramidDiffLayoutPipeline.from_pretrained(
+    base_model_path, controlnet=[PyramidDiffNet], torch_dtype=torch.float32
 )
 pipe.enable_attention_slicing()
 
