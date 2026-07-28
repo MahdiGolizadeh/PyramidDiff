@@ -22,6 +22,7 @@ if is_torch_available():
     from .autoencoder_tiny import AutoencoderTiny
     from .controlnet import ControlNetModel
     from .controlnet_bdm import ControlNetBDMModel
+    from .acdm_decoder import ACDM, ACDMDecoderBranch, AdaptivePyramidFusion, LevelAdapterBlock, ScaleLinkTransformer
     from .pyramiddiff_groundnet import (
         DetectionAwareAnnotationConsistencyLoss,
         FourierBoxEmbedder,
