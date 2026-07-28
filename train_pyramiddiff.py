@@ -53,6 +53,7 @@ import diffusers
 from diffusers import (
     AutoencoderKL,
     ControlNetModel,
+    ACDMDecoderBranch,
     DetectionAwareAnnotationConsistencyLoss,
     GroundingTokenizer,
     MultiScaleObjectPyramid,
@@ -264,6 +265,31 @@ def parse_args(input_args=None):
         default=None,
         required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--acdm_decoder_model_name_or_path",
+        type=str,
+        default=None,
+        help="Optional path to pretrained PyramidDiff ACDM decoder branch weights.",
+    )
+    parser.add_argument(
+        "--detector_neck_channels",
+        type=int,
+        nargs=3,
+        default=(256, 512, 1024),
+        help="YOLOv11n neck channel sizes used by ACDM LAB/APF modules.",
+    )
+    parser.add_argument(
+        "--detector_localization_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight for detector localization knowledge-distillation loss when detector outputs are supplied.",
+    )
+    parser.add_argument(
+        "--diffusion_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight for standard diffusion reconstruction loss.",
     )
     parser.add_argument(
         "--controlnet_model_name_or_path",
@@ -943,7 +969,11 @@ def main(args):
     vae.requires_grad_(False)
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
+    acdm_decoder = ACDMDecoderBranch(unet, detector_neck_channels=args.detector_neck_channels)
+    if args.acdm_decoder_model_name_or_path:
+        acdm_decoder.load_state_dict(torch.load(args.acdm_decoder_model_name_or_path, map_location="cpu"))
     controlnet.train()
+    acdm_decoder.train()
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -998,7 +1028,7 @@ def main(args):
 
 
     # Optimizer creation
-    params_to_optimize = controlnet.parameters()
+    params_to_optimize = list(controlnet.parameters()) + list(acdm_decoder.trainable_parameters())
     optimizer = optimizer_class(
         params_to_optimize,
         lr=args.learning_rate,
@@ -1038,8 +1068,8 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, optimizer, train_dataloader, lr_scheduler
+    controlnet, acdm_decoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        controlnet, acdm_decoder, optimizer, train_dataloader, lr_scheduler
     )
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
@@ -1054,6 +1084,7 @@ def main(args):
     vae.to(accelerator.device, dtype=weight_dtype)
     unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
+    acdm_decoder.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1230,13 +1261,16 @@ def main(args):
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                diffusion_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                # Detector localization KD can be added by datasets that provide frozen-detector predictions;
+                # keep the standard diffusion reconstruction objective active for PyramidDiff fine-tuning.
+                loss = args.diffusion_loss_weight * diffusion_loss
 
 
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    params_to_clip = controlnet.parameters()
+                    params_to_clip = list(controlnet.parameters()) + list(acdm_decoder.trainable_parameters())
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
@@ -1291,7 +1325,7 @@ def main(args):
                             global_step,
                         )
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss": loss.detach().item(), "diffusion_loss": diffusion_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
@@ -1303,6 +1337,7 @@ def main(args):
     if accelerator.is_main_process:
         controlnet = accelerator.unwrap_model(controlnet)
         controlnet.save_pretrained(args.output_dir)
+        torch.save(accelerator.unwrap_model(acdm_decoder).state_dict(), os.path.join(args.output_dir, "acdm_decoder.pt"))
 
         if args.push_to_hub:
             save_model_card(

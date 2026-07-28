@@ -37,6 +37,9 @@ except OptionalDependencyNotAvailable:
 else:
     from .models import (
         AsymmetricAutoencoderKL,
+        ACDM,
+        ACDMDecoderBranch,
+        AdaptivePyramidFusion,
         AutoencoderKL,
         AutoencoderTiny,
         ControlNetModel,
@@ -47,6 +50,8 @@ else:
         GroundingTokenizer,
         ModelMixin,
         MultiScaleObjectPyramid,
+        LevelAdapterBlock,
+        ScaleLinkTransformer,
         MultiAdapter,
         PriorTransformer,
         T2IAdapter,
@@ -181,6 +186,7 @@ else:
         StableDiffusionControlNetImg2ImgPipeline,
         StableDiffusionControlNetInpaintPipeline,
         StableDiffusionControlNetPipeline,
+        StableDiffusionPyramidDiffLayoutPipeline,
         StableDiffusionHicoNetLayoutPipeline,
         # StableDiffusionControlNetLayoutPipeline,
         # StableDiffusionControlNetMultiLayoutPipeline,

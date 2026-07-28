@@ -16,6 +16,7 @@ else:
     from .pipeline_controlnet import StableDiffusionControlNetPipeline
     from .layout_encoder import LayoutTransformerEncoder
     from .pipeline_controlnet_layout import StableDiffusionControlNetLayoutPipeline
+    from .pipeline_pyramiddiff_layout import StableDiffusionPyramidDiffLayoutPipeline
     from .pipeline_hiconet_layout import StableDiffusionHicoNetLayoutPipeline
     from .pipeline_controlnet_img2img import StableDiffusionControlNetImg2ImgPipeline
     from .pipeline_controlnet_inpaint import StableDiffusionControlNetInpaintPipeline

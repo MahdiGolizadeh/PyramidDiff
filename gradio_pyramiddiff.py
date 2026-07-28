@@ -27,7 +27,7 @@ save_date_sec = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 save_dir = "./result-layout/"
 
-from diffusers import  ControlNetModel, UniPCMultistepScheduler, DPMSolverMultistepScheduler, StableDiffusionHicoNetLayoutPipeline
+from diffusers import  ControlNetModel, UniPCMultistepScheduler, DPMSolverMultistepScheduler, StableDiffusionPyramidDiffLayoutPipeline
 base_model_path = ""
 common = ""
 
@@ -37,7 +37,7 @@ controlnet_path = ""
 
 PyramidDiffGroundNet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float32)
 
-pipe = StableDiffusionHicoNetLayoutPipeline.from_pretrained(
+pipe = StableDiffusionPyramidDiffLayoutPipeline.from_pretrained(
     base_model_path, controlnet=[PyramidDiffGroundNet], torch_dtype=torch.float32
 )
 pipe.enable_attention_slicing()
