@@ -78,9 +78,8 @@ check_min_version("0.21.0.dev0")
 
 logger = get_logger(__name__)
 
-# PyramidDiff trains a GroundNet/ControlNet side branch with optional MSOP and DA-ACL building blocks.
-# The lightweight modules are imported above so experiments can attach scale-aware routing and
-# detection-aware annotation consistency without changing the frozen Stable Diffusion backbone.
+# PyramidDiff builds on the original HiCo ControlNet branch and adds a copied UNet decoder plus a separate ACDM adapter.
+# The adapter connects decoder ResNet features to YOLOv11n neck features while the Stable Diffusion backbone stays frozen.
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)

@@ -35,7 +35,7 @@ controlnet_path = ""
 
 
 
-PyramidDiffGroundNet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float32)
+PyramidDiffHiCo = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float32)
 
 pipe = StableDiffusionPyramidDiffLayoutPipeline.from_pretrained(
     base_model_path, controlnet=[PyramidDiffGroundNet], torch_dtype=torch.float32
