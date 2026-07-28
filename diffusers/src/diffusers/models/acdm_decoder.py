@@ -99,8 +99,8 @@ class ScaleLinkTransformer(nn.Module):
         return decoder_feature + self.out(attended)
 
 
-class ACDMAdapter(nn.Module):
-    """Separate ACDM adapter that links copied decoder features with YOLOv11n neck features."""
+class ACDM(nn.Module):
+    """Attention-guided cross-scale detector modulation for decoder features."""
 
     def __init__(
         self,
@@ -131,13 +131,13 @@ class ACDMAdapter(nn.Module):
         return corrections, weights if weights is not None else decoder_features[0].new_zeros((decoder_features[0].shape[0], 3))
 
 
-class CopiedUNetDecoderBranch(nn.Module):
-    """Copied UNet decoder branch; ResNet parameters are trainable and transformer/attention parameters stay frozen."""
+class ACDMDecoderBranch(nn.Module):
+    """Trainable copied UNet decoder branch that emits zero-conv decoder residual corrections."""
 
-    def __init__(self, unet: nn.Module) -> None:
+    def __init__(self, unet: nn.Module, detector_neck_channels: Sequence[int] = (256, 512, 1024), hidden_channels: int = 128) -> None:
         super().__init__()
         self.up_blocks = copy.deepcopy(unet.up_blocks)
-        self.decoder_channels = tuple(unet.config.block_out_channels[::-1])
+        self.acdm = ACDM(tuple(unet.config.block_out_channels[::-1]), detector_neck_channels, hidden_channels)
         self.freeze_transformer_blocks()
 
     def freeze_transformer_blocks(self) -> None:
@@ -147,7 +147,7 @@ class CopiedUNetDecoderBranch(nn.Module):
     def trainable_parameters(self) -> Iterable[nn.Parameter]:
         return (parameter for parameter in self.parameters() if parameter.requires_grad)
 
-
-# Backward-compatible aliases for checkpoints/scripts produced before ACDM was split from the decoder branch.
-ACDM = ACDMAdapter
-ACDMDecoderBranch = CopiedUNetDecoderBranch
+    def forward(self, decoder_features: Sequence[Tensor], detector_neck_features: Sequence[Tensor]) -> Tuple[List[Tensor], Tensor]:
+        # The copied up_blocks are owned here for checkpoint parity with the frozen UNet decoder. Feature capture/injection
+        # is performed by the pipeline around the frozen UNet, then ACDM converts branch features to zero-conv residuals.
+        return self.acdm(decoder_features, detector_neck_features)

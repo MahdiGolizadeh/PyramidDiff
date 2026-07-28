@@ -38,9 +38,7 @@ else:
     from .models import (
         AsymmetricAutoencoderKL,
         ACDM,
-        ACDMAdapter,
         ACDMDecoderBranch,
-        CopiedUNetDecoderBranch,
         AdaptivePyramidFusion,
         AutoencoderKL,
         AutoencoderTiny,

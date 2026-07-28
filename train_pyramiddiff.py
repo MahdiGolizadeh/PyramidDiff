@@ -53,8 +53,7 @@ import diffusers
 from diffusers import (
     AutoencoderKL,
     ControlNetModel,
-    ACDMAdapter,
-    CopiedUNetDecoderBranch,
+    ACDMDecoderBranch,
     DetectionAwareAnnotationConsistencyLoss,
     GroundingTokenizer,
     MultiScaleObjectPyramid,
@@ -969,16 +968,11 @@ def main(args):
     vae.requires_grad_(False)
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
-    copied_decoder = CopiedUNetDecoderBranch(unet)
-    acdm_adapter = ACDMAdapter(copied_decoder.decoder_channels, detector_neck_channels=args.detector_neck_channels)
+    acdm_decoder = ACDMDecoderBranch(unet, detector_neck_channels=args.detector_neck_channels)
     if args.acdm_decoder_model_name_or_path:
-        checkpoint = torch.load(args.acdm_decoder_model_name_or_path, map_location="cpu")
-        copied_decoder.load_state_dict(checkpoint.get("copied_decoder", checkpoint), strict=False)
-        if isinstance(checkpoint, dict) and "acdm_adapter" in checkpoint:
-            acdm_adapter.load_state_dict(checkpoint["acdm_adapter"], strict=False)
+        acdm_decoder.load_state_dict(torch.load(args.acdm_decoder_model_name_or_path, map_location="cpu"))
     controlnet.train()
-    copied_decoder.train()
-    acdm_adapter.train()
+    acdm_decoder.train()
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -1033,7 +1027,7 @@ def main(args):
 
 
     # Optimizer creation
-    params_to_optimize = list(controlnet.parameters()) + list(copied_decoder.trainable_parameters()) + list(acdm_adapter.parameters())
+    params_to_optimize = list(controlnet.parameters()) + list(acdm_decoder.trainable_parameters())
     optimizer = optimizer_class(
         params_to_optimize,
         lr=args.learning_rate,
@@ -1073,8 +1067,8 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    controlnet, copied_decoder, acdm_adapter, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, copied_decoder, acdm_adapter, optimizer, train_dataloader, lr_scheduler
+    controlnet, acdm_decoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        controlnet, acdm_decoder, optimizer, train_dataloader, lr_scheduler
     )
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
@@ -1089,8 +1083,7 @@ def main(args):
     vae.to(accelerator.device, dtype=weight_dtype)
     unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
-    copied_decoder.to(accelerator.device, dtype=weight_dtype)
-    acdm_adapter.to(accelerator.device, dtype=weight_dtype)
+    acdm_decoder.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1276,7 +1269,7 @@ def main(args):
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    params_to_clip = list(controlnet.parameters()) + list(copied_decoder.trainable_parameters()) + list(acdm_adapter.parameters())
+                    params_to_clip = list(controlnet.parameters()) + list(acdm_decoder.trainable_parameters())
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
@@ -1343,10 +1336,7 @@ def main(args):
     if accelerator.is_main_process:
         controlnet = accelerator.unwrap_model(controlnet)
         controlnet.save_pretrained(args.output_dir)
-        torch.save({
-            "copied_decoder": accelerator.unwrap_model(copied_decoder).state_dict(),
-            "acdm_adapter": accelerator.unwrap_model(acdm_adapter).state_dict(),
-        }, os.path.join(args.output_dir, "acdm_decoder.pt"))
+        torch.save(accelerator.unwrap_model(acdm_decoder).state_dict(), os.path.join(args.output_dir, "acdm_decoder.pt"))
 
         if args.push_to_hub:
             save_model_card(
