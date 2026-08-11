@@ -186,12 +186,3 @@ python gradio_pyramiddiff.py
 | ACDM channels | 128 |
 | ACDM resolution | 32 × 32 |
 | SLT heads | 4 |
-
-## References
-
-- ControlNet: Zhang, Rao, and Agrawala, ICCV 2023.
-- HiCo: Cheng et al., NeurIPS 2024.
-- Latent Diffusion / Stable Diffusion: Rombach et al., CVPR 2022.
-- DDPM: Ho, Jain, and Abbeel, NeurIPS 2020.
-- Ultralytics YOLO11: https://github.com/ultralytics/ultralytics
-- CIoU/DIoU loss: Zheng et al., AAAI 2020.
