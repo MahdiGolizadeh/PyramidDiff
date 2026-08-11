@@ -2,67 +2,6 @@
 
 PyramidDiff is a layout-conditioned image generation method built on the HiCo-style ControlNet branch in this repository. It uses Stable Diffusion 1.5 as the frozen image generation backbone and trains only the PyramidDiff localization refinement components.
 
-## Architecture Summary
-
-### Frozen base model
-
-The pretrained Stable Diffusion/HiCo backbone remains frozen during PyramidDiff training:
-
-- **VAE encoder/decoder:** maps 512 × 512 images to and from 64 × 64 latent tensors.
-- **UNet:** denoising encoder/decoder with convolutional and transformer blocks.
-- **Text encoder:** CLIP ViT-L/14 text conditioning.
-- **HiCo/ControlNet layout branch:** initialized from a pretrained HiCo checkpoint when provided.
-
-### Frozen localization teacher
-
-PyramidDiff uses a frozen COCO-pretrained YOLOv11n detector as a localization teacher. Detector neck features are extracted from three scales:
-
-| Level | Resolution | Channels | Role |
-| --- | --- | --- | --- |
-| P3 | 64 × 64 | 256 | fine spatial detail |
-| P4 | 32 × 32 | 512 | balanced detail and semantics |
-| P5 | 16 × 16 | 1024 | high-level context |
-
-The detector is used for localization supervision only; classification loss is not part of the PyramidDiff objective because object semantics are supplied by layout captions.
-
-## Trainable PyramidDiff Components
-
-### Localization Refinement Decoder (LRD)
-
-The LRD mirrors four frozen UNet decoder stages and produces ControlNet-style residual corrections:
-
-```text
-Delta_i = Z_i(C_i(U_i))
-U_i_hat = U_i + Delta_i
-```
-
-Each trainable convolution block `C_i` is:
-
-1. 3 × 3 convolution, stride 1, padding 1
-2. GroupNorm with up to 32 groups
-3. SiLU activation
-
-Each zero-conv `Z_i` is a 1 × 1 convolution with all weights and biases initialized to zero, preserving pretrained behavior at the start of training.
-
-| Stage | Resolution | Channels | Source |
-| --- | --- | --- | --- |
-| d1 | 4 × 4 | 1280 | deepest decoder stage |
-| d2 | 8 × 8 | 1280 | second deepest decoder stage |
-| d3 | 16 × 16 | 640 | mid-resolution decoder stage |
-| d4 | 32 × 32 | 720 | highest-resolution decoder stage |
-
-Transformer/attention blocks inherited from HiCo remain frozen; only convolutional PyramidDiff refinement parameters are optimized.
-
-### Adaptive Cross-scale Distillation Module (ACDM)
-
-ACDM is used only during training and discarded for inference. It transfers YOLOv11n localization knowledge to the LRD using a shared feature space of **128 channels at 32 × 32 resolution**.
-
-ACDM contains:
-
-1. **Localization Alignment Block (LAB):** GroupNorm → SiLU → 1 × 1 projection → resize to 32 × 32.
-2. **Adaptive Scale Aggregation (ASA):** global average pooling over concatenated detector scales followed by `384 -> 128 -> 3` MLP and softmax scale weights.
-3. **Adaptive Pyramid Fusion (APF):** weighted detector features are concatenated and fused by 3 × 3 and 1 × 1 convolutions.
-4. **Spatial Localization Transfer (SLT):** 4-head cross-attention where aligned LRD features are queries and fused detector features are keys/values. Each stage has a learnable scale initialized to zero.
 
 ## Data Preparation
 
