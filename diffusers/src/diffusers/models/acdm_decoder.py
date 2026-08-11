@@ -36,24 +36,30 @@ def zero_module(module: nn.Module) -> nn.Module:
 
 
 class LevelAdapterBlock(nn.Module):
-    """LAB: GroupNorm -> SiLU -> 1x1 Conv projection to a common channel size."""
+    """LAB: normalize, project, and resize one feature level to the ACDM space."""
 
-    def __init__(self, in_channels: int, out_channels: int = 128, norm_groups: int = 32) -> None:
+    def __init__(self, in_channels: int, out_channels: int = 128, norm_groups: int = 32, target_size: int = 32) -> None:
         super().__init__()
+        self.target_size = target_size
         self.norm = nn.GroupNorm(_num_groups(in_channels, norm_groups), in_channels)
         self.act = nn.SiLU()
         self.proj = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.downsample = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, padding=1)
 
     def forward(self, feature: Tensor, size: Optional[Tuple[int, int]] = None) -> Tensor:
-        if size is not None and feature.shape[-2:] != size:
-            feature = F.interpolate(feature, size=size, mode="bilinear", align_corners=False)
-        return self.proj(self.act(self.norm(feature)))
+        target_size = size if size is not None else (self.target_size, self.target_size)
+        feature = self.proj(self.act(self.norm(feature)))
+        if feature.shape[-2:] == target_size:
+            return feature
+        if feature.shape[-2] == target_size[0] * 2 and feature.shape[-1] == target_size[1] * 2:
+            return self.downsample(feature)
+        return F.interpolate(feature, size=target_size, mode="bilinear", align_corners=False)
 
 
 class AdaptivePyramidFusion(nn.Module):
     """APF: softmax weight detector-neck scales and fuse them into 128 channels."""
 
-    def __init__(self, num_levels: int = 3, channels: int = 128, hidden_dim: int = 256, norm_groups: int = 32) -> None:
+    def __init__(self, num_levels: int = 3, channels: int = 128, hidden_dim: int = 128, norm_groups: int = 32) -> None:
         super().__init__()
         self.num_levels = num_levels
         self.router = nn.Sequential(
@@ -79,14 +85,15 @@ class AdaptivePyramidFusion(nn.Module):
 
 
 class ScaleLinkTransformer(nn.Module):
-    """SLT cross-attention with decoder features as queries and detector features as keys/values."""
+    """SLT cross-attention with zero-initialized residual scaling."""
 
-    def __init__(self, channels: int = 128, num_heads: int = 8, norm_groups: int = 32) -> None:
+    def __init__(self, channels: int = 128, num_heads: int = 4, norm_groups: int = 32) -> None:
         super().__init__()
         self.q_norm = nn.GroupNorm(_num_groups(channels, norm_groups), channels)
         self.kv_norm = nn.GroupNorm(_num_groups(channels, norm_groups), channels)
         self.attn = nn.MultiheadAttention(channels, num_heads, batch_first=True)
         self.out = nn.Conv2d(channels, channels, kernel_size=1)
+        self.scale = nn.Parameter(torch.zeros(()))
 
     def forward(self, decoder_feature: Tensor, detector_feature: Tensor) -> Tensor:
         bsz, channels, height, width = decoder_feature.shape
@@ -96,7 +103,7 @@ class ScaleLinkTransformer(nn.Module):
         key_value = self.kv_norm(detector_feature).flatten(2).transpose(1, 2)
         attended, _ = self.attn(query, key_value, key_value, need_weights=False)
         attended = attended.transpose(1, 2).reshape(bsz, channels, height, width)
-        return decoder_feature + self.out(attended)
+        return decoder_feature + self.scale * self.out(attended)
 
 
 class ACDM(nn.Module):
@@ -107,13 +114,19 @@ class ACDM(nn.Module):
         decoder_channels: Sequence[int],
         detector_neck_channels: Sequence[int] = (256, 512, 1024),
         hidden_channels: int = 128,
-        num_heads: int = 8,
+        num_heads: int = 4,
+        target_size: int = 32,
     ) -> None:
         super().__init__()
         if len(detector_neck_channels) != 3:
             raise ValueError("ACDM expects three YOLOv11n detector neck levels by default.")
-        self.decoder_labs = nn.ModuleList(LevelAdapterBlock(channels, hidden_channels) for channels in decoder_channels)
-        self.detector_labs = nn.ModuleList(LevelAdapterBlock(channels, hidden_channels) for channels in detector_neck_channels)
+        self.target_size = target_size
+        self.decoder_labs = nn.ModuleList(
+            LevelAdapterBlock(channels, hidden_channels, target_size=target_size) for channels in decoder_channels
+        )
+        self.detector_labs = nn.ModuleList(
+            LevelAdapterBlock(channels, hidden_channels, target_size=target_size) for channels in detector_neck_channels
+        )
         self.apf = AdaptivePyramidFusion(len(detector_neck_channels), hidden_channels)
         self.slt = nn.ModuleList(ScaleLinkTransformer(hidden_channels, num_heads) for _ in decoder_channels)
         self.out = nn.ModuleList(zero_module(nn.Conv2d(hidden_channels, channels, kernel_size=1)) for channels in decoder_channels)
@@ -121,13 +134,14 @@ class ACDM(nn.Module):
     def forward(self, decoder_features: Sequence[Tensor], detector_neck_features: Sequence[Tensor]) -> Tuple[List[Tensor], Tensor]:
         corrections: List[Tensor] = []
         weights: Optional[Tensor] = None
+        acdm_size = (self.target_size, self.target_size)
         for level, decoder_feature in enumerate(decoder_features):
             size = decoder_feature.shape[-2:]
-            adapted_decoder = self.decoder_labs[level](decoder_feature)
-            adapted_detector = [lab(feature, size=size) for lab, feature in zip(self.detector_labs, detector_neck_features)]
+            adapted_decoder = self.decoder_labs[level](decoder_feature, size=acdm_size)
+            adapted_detector = [lab(feature, size=acdm_size) for lab, feature in zip(self.detector_labs, detector_neck_features)]
             fused_detector, weights = self.apf(adapted_detector)
             linked = self.slt[level](adapted_decoder, fused_detector)
-            corrections.append(self.out[level](linked))
+            corrections.append(F.interpolate(self.out[level](linked), size=size, mode="bilinear", align_corners=False))
         return corrections, weights if weights is not None else decoder_features[0].new_zeros((decoder_features[0].shape[0], 3))
 
 
