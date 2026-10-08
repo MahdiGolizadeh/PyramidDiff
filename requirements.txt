@@ -140,6 +140,7 @@ torch=2.2.0=pypi_0
 torchaudio=2.2.0=pypi_0
 torchtriton=2.2.0=py311
 torchvision=0.17.0=pypi_0
+ultralytics=8.3.0=pypi_0
 tqdm=4.66.4=pypi_0
 transformers=4.44.0=pypi_0
 triton=2.2.0=pypi_0
